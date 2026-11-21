@@ -1,0 +1,150 @@
+# Home Assistant package: LAN Canary Honeypot & Active TCP Tarpit (patched)
+# Save as: /config/packages/lan_canary_tarpit.yaml
+#
+# BEFORE RESTARTING, edit the two lines marked  >>> CHANGE ME <<<  in
+# script.lan_canary_notify below (your phone's notify service).
+# The webhook automation needs `lan_canary_webhook_id` in secrets.yaml.
+
+counter:
+  canary_hit_count:
+    name: "Canary Tripwire Hits"
+    icon: "mdi:radar"
+    restore: true
+    step: 1
+
+input_text:
+  canary_last_event:
+    name: "Canary Last Probe"
+    max: 255
+    icon: "mdi:shield-bug-outline"
+
+input_boolean:
+  canary_intrusion_alert:
+    name: "LAN Canary Intrusion Alert"
+    icon: "mdi:shield-alert"
+
+template:
+  - sensor:
+      - name: "Canary Tripwire Status"
+        unique_id: canary_tripwire_status
+        icon: >
+          {{ 'mdi:spider-web' if is_state('input_boolean.canary_intrusion_alert', 'on') else 'mdi:shield-check' }}
+        # The state is kept short (HA states are limited to 255 characters);
+        # the full last event is in the attribute.
+        state: >
+          {% set hits = states('counter.canary_hit_count') | int(0) %}
+          {% if is_state('input_boolean.canary_intrusion_alert', 'on') %}
+            INTRUDER DETECTED ({{ hits }} hits)
+          {% else %}
+            Armed ({{ hits }} hits)
+          {% endif %}
+        attributes:
+          last_event: "{{ states('input_text.canary_last_event') }}"
+
+script:
+  lan_canary_notify:
+    alias: "LAN Canary - send push"
+    mode: queued
+    max: 10
+    fields:
+      title:
+        description: "Notification title"
+      message:
+        description: "Notification body"
+    sequence:
+      # >>> CHANGE ME <<<  e.g. notify.mobile_app_pixel_8 or notify.mobile_app_iphone_cua_toi
+      - action: notify.mobile_app_CHANGE_ME
+        data:
+          title: "{{ title }}"
+          message: "{{ message }}"
+          data:
+            # iOS: critical alert (sounds even in silent mode)
+            push:
+              sound:
+                name: "default"
+                critical: 1
+                volume: 1.0
+            # Android: high priority, alarm channel
+            ttl: 0
+            priority: high
+            channel: alarm_stream
+            actions:
+              - action: "CLEAR_CANARY_ALERT"
+                title: "Acknowledge & release tarpit"
+
+automation:
+  # 1) Built-in decoy ports were hit (event already rate-limited in Python)
+  - id: lan_canary_hit_push
+    alias: "Security - LAN Canary hit -> push"
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: event
+        event_type: lan_canary_hit
+    actions:
+      - action: script.lan_canary_notify
+        data:
+          title: "LAN CANARY TRIPPED"
+          message: "{{ trigger.event.data.message }}"
+
+  # 2) Optional: OpenCanary (or another LAN sensor) posting to a webhook.
+  #    LAN only, POST only, secret ID, at most one alert every 30 s.
+  #    Delete this automation if you do not use OpenCanary.
+  - id: lan_canary_opencanary_webhook
+    alias: "Security - OpenCanary webhook -> push"
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: webhook
+        webhook_id: !secret lan_canary_webhook_id
+        allowed_methods:
+          - POST
+        local_only: true
+    actions:
+      - variables:
+          d: "{{ trigger.json if (trigger.json is defined and trigger.json is mapping) else {} }}"
+          msg: >-
+            {{ (now().strftime('%H:%M:%S') ~ ' — OpenCanary: '
+                ~ (d.src_host | default('?') | string)[:45] ~ ' probed port '
+                ~ (d.dst_port | default('?') | string)[:6] ~ ' (logtype '
+                ~ (d.logtype | default('?') | string)[:8] ~ ')')[:250] }}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.canary_last_event
+        data:
+          value: "{{ msg }}"
+      - action: counter.increment
+        target:
+          entity_id: counter.canary_hit_count
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.canary_intrusion_alert
+      - action: script.lan_canary_notify
+        data:
+          title: "OPENCANARY ALERT"
+          message: "{{ msg }}"
+      - delay: "00:00:30"
+
+  # 3) Turning the alert off by hand releases the tarpit
+  - id: lan_canary_reset_on_toggle_off
+    alias: "Security - LAN Canary reset when alert turned off"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.canary_intrusion_alert
+        from: "on"
+        to: "off"
+    actions:
+      - action: lan_canary.reset_canary
+
+  # 4) "Acknowledge" button on the phone notification
+  - id: lan_canary_notification_action
+    alias: "Security - LAN Canary acknowledge from phone"
+    mode: single
+    triggers:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: "CLEAR_CANARY_ALERT"
+    actions:
+      - action: lan_canary.reset_canary

@@ -1,0 +1,9 @@
+{
+  "domain": "lan_canary",
+  "name": "LAN Canary Honeypot & Active TCP Tarpit (patched)",
+  "version": "1.1.0",
+  "documentation": "https://github.com/robainbinder/ha-lan-canary-tarpit",
+  "requirements": [],
+  "codeowners": [],
+  "iot_class": "local_push"
+}

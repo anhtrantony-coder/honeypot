@@ -1,0 +1,7 @@
+start_canary:
+  name: Start canary listeners
+  description: Bind any configured decoy ports that are not listening yet.
+
+reset_canary:
+  name: Reset canary
+  description: Release every trapped socket and turn the intrusion alert off.
